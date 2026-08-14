@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aquarov-ai"
+version = "0.1.0"
+description = "AquaROV AI — underwater ROV inspection system (Axelera Metis + Voyager SDK)"
+requires-python = ">=3.12"
+dependencies = ["PySide6>=6.6"]
+
+[project.scripts]
+aquarov = "aquarov.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
