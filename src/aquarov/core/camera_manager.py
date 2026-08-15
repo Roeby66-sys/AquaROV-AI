@@ -14,8 +14,8 @@ from threading import Lock
 from time import time
 from typing import Any, Callable, Optional, Protocol
 
-from dto import CameraChannel
-from inference_worker import InferenceFrame, InferenceWorker
+from aquarov.core.dto import CameraChannel
+from aquarov.core.inference_worker import InferenceFrame, InferenceWorker
 
 
 class CameraBackend(Protocol):
