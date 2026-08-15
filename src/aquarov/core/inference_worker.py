@@ -16,7 +16,7 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any, Callable, Optional, Protocol, Sequence
 
-from dto import Detection
+from aquarov.core.dto import Detection
 
 
 @dataclass
