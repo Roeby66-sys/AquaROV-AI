@@ -15,7 +15,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from dto import (
+from aquarov.core.dto import (
     AIConfig, BoundingBox, CameraChannel, Detection,
     DetectionClass, DetectionSet,
 )
