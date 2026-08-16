@@ -28,7 +28,6 @@ from .dto import Alert, SystemMetrics, WaterQuality
 
 logger = logging.getLogger(__name__)
 
-
 MessageHandler = Callable[[str, dict[str, Any]], None]
 
 
@@ -47,12 +46,7 @@ class MQTTConfig:
 
 
 class MQTTClient:
-    """
-    Lightweight MQTT client for AquaROV AI.
-
-    The class does not require MQTT during construction. The paho-mqtt
-    package is imported only when connect() is called.
-    """
+    """Lightweight MQTT client for AquaROV AI."""
 
     def __init__(
         self,
@@ -66,6 +60,7 @@ class MQTTClient:
         self._client: Any | None = None
         self._connected = False
         self._lock = threading.RLock()
+        self._subscriptions: dict[str, int] = {}
 
     @property
     def connected(self) -> bool:
@@ -76,7 +71,8 @@ class MQTTClient:
     @property
     def client(self) -> Any | None:
         """Return the underlying paho client, if initialized."""
-        return self._client
+        with self._lock:
+            return self._client
 
     def connect(self) -> None:
         """
@@ -133,9 +129,12 @@ class MQTTClient:
                     self.config.keepalive,
                 )
                 client.loop_start()
-            except Exception:
+            except Exception as exc:
                 self._client = None
-                raise
+                self._connected = False
+                raise ConnectionError(
+                    "Failed to connect to the MQTT broker."
+                ) from exc
 
     def disconnect(self) -> None:
         """Disconnect cleanly from the MQTT broker."""
@@ -154,9 +153,18 @@ class MQTTClient:
                 self._client = None
 
     def subscribe(self, topic: str, qos: int = 0) -> None:
-        """Subscribe to an MQTT topic."""
+        """Subscribe to an MQTT topic and remember it for reconnects."""
         client = self._require_client()
-        client.subscribe(topic, qos=qos)
+
+        result, _ = client.subscribe(topic, qos=qos)
+
+        if result != 0:
+            raise ConnectionError(
+                f"MQTT subscription failed with return code {result}"
+            )
+
+        with self._lock:
+            self._subscriptions[topic] = qos
 
     def subscribe_sensor_topic(self, sensor_id: str) -> None:
         """Subscribe to telemetry from one water-quality sensor."""
@@ -223,9 +231,7 @@ class MQTTClient:
         topic = self.topic("status")
         self.publish(
             topic,
-            {
-                "status": status,
-            },
+            {"status": status},
             retain=True,
         )
 
@@ -249,17 +255,21 @@ class MQTTClient:
         self.message_handler = handler
 
     def _require_client(self) -> Any:
-        if self._client is None:
+        with self._lock:
+            client = self._client
+            connected = self._connected
+
+        if client is None:
             raise RuntimeError(
                 "MQTT client is not initialized. Call connect() first."
             )
 
-        if not self.connected:
+        if not connected:
             raise ConnectionError(
                 "MQTT client is not connected to the broker."
             )
 
-        return self._client
+        return client
 
     def _on_connect(
         self,
@@ -269,22 +279,36 @@ class MQTTClient:
         reason_code: Any,
         properties: Any = None,
     ) -> None:
-        del client, userdata, flags, properties
+        del userdata, flags, properties
+
+        connected = reason_code == 0
 
         with self._lock:
-            self._connected = reason_code == 0
+            self._connected = connected
+            subscriptions = dict(self._subscriptions)
 
-        if self._connected:
-            logger.info(
-                "Connected to MQTT broker %s:%s",
-                self.config.host,
-                self.config.port,
-            )
-        else:
+        if not connected:
             logger.error(
                 "MQTT connection failed: %s",
                 reason_code,
             )
+            return
+
+        for topic, qos in subscriptions.items():
+            result, _ = client.subscribe(topic, qos=qos)
+
+            if result != 0:
+                logger.error(
+                    "Failed to restore MQTT subscription %s: %s",
+                    topic,
+                    result,
+                )
+
+        logger.info(
+            "Connected to MQTT broker %s:%s",
+            self.config.host,
+            self.config.port,
+        )
 
     def _on_disconnect(
         self,
@@ -346,4 +370,4 @@ __all__ = [
     "MQTTClient",
     "MQTTConfig",
     "MessageHandler",
-]
+  ]
