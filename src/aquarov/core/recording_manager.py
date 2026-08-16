@@ -120,7 +120,7 @@ class RecordingManager:
                 duration=self._state.duration,
                 storage_path=self._state.storage_path,
                 camera_id=self._state.camera_id,
-                status="cancelled",
+                status="stopped",
                 file_size_mb=self._state.file_size_mb,
             )
 
