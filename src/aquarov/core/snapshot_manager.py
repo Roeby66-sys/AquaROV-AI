@@ -1,16 +1,11 @@
-"src/aquarov/core/snapshot_manager.py"
-
 """
 AquaROV AI — Snapshot Manager.
 
 Framework-independent snapshot lifecycle manager.
 
-The manager creates snapshot paths and returns the shared SnapshotInfo
-DTO defined by the core DTO layer. Actual image capture is delegated
-to the camera/video backend.
-
-Project: AquaROV AI - Underwater ROV Inspection System
-Target: Axelera Metis + Voyager SDK deployments.
+The manager creates snapshot metadata and prepares safe output paths.
+Actual image capture and encoding are delegated to the camera/video backend.
+Runtime snapshot files must remain outside the Git repository.
 """
 
 from __future__ import annotations
@@ -22,19 +17,11 @@ from time import time
 from aquarov.core.dto import SnapshotInfo
 
 
-DEFAULT_IMAGE_EXTENSION = ".jpg"
-
-
 class SnapshotManager:
-    """Manage snapshot paths and metadata independently of the camera backend."""
+    """Manage snapshot metadata and runtime output paths."""
 
-    def __init__(
-        self,
-        snapshot_dir: str | Path,
-        image_extension: str = DEFAULT_IMAGE_EXTENSION,
-    ) -> None:
+    def __init__(self, snapshot_dir: str | Path) -> None:
         self._snapshot_dir = Path(snapshot_dir)
-        self._image_extension = self._normalize_extension(image_extension)
         self._lock = Lock()
 
     @property
@@ -42,21 +29,15 @@ class SnapshotManager:
         """Return the runtime snapshot directory."""
         return self._snapshot_dir
 
-    @property
-    def image_extension(self) -> str:
-        """Return the configured snapshot image extension."""
-        return self._image_extension
-
     def create_snapshot_info(
         self,
         camera_id: str,
         filename: str | None = None,
     ) -> SnapshotInfo:
         """
-        Create metadata for a new snapshot.
+        Create snapshot metadata and prepare a safe output path.
 
-        The method creates the destination directory and returns the
-        shared SnapshotInfo DTO. It does not capture or write image data.
+        Actual image capture is handled by the camera/video backend.
         """
         with self._lock:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -64,14 +45,16 @@ class SnapshotManager:
             timestamp = time()
 
             if filename is None:
-                filename = (
-                    f"camera_{camera_id}_{int(timestamp * 1000)}"
-                    f"{self._image_extension}"
-                )
-            elif Path(filename).suffix == "":
-                filename = f"{filename}{self._image_extension}"
+                filename = f"camera_{camera_id}_{int(timestamp)}.jpg"
 
             file_path = self._snapshot_dir / filename
+
+            try:
+                file_path.resolve().relative_to(self._snapshot_dir.resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    "Snapshot filename must remain inside the snapshot directory."
+                ) from exc
 
             return SnapshotInfo(
                 camera_id=camera_id,
@@ -84,19 +67,6 @@ class SnapshotManager:
         camera_id: str,
         filename: str | None = None,
     ) -> Path:
-        """Return a snapshot destination path."""
+        """Build a safe runtime path for a snapshot."""
         snapshot = self.create_snapshot_info(camera_id, filename)
         return Path(snapshot.image_path)
-
-    @staticmethod
-    def _normalize_extension(extension: str) -> str:
-        """Normalize an image extension to include a leading dot."""
-        extension = extension.strip()
-
-        if not extension:
-            return DEFAULT_IMAGE_EXTENSION
-
-        if not extension.startswith("."):
-            extension = f".{extension}"
-
-        return extension.lower()
