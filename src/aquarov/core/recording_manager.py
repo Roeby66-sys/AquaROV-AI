@@ -12,6 +12,7 @@ Runtime recording files must remain outside the Git repository.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 from time import time
@@ -26,6 +27,7 @@ class RecordingManager:
         self._recording_dir = Path(recording_dir)
         self._lock = Lock()
         self._state = RecordingState()
+        self._started_at: float | None = None
 
     @property
     def recording_dir(self) -> Path:
@@ -34,7 +36,7 @@ class RecordingManager:
 
     @property
     def state(self) -> RecordingState:
-        """Return the current shared recording state."""
+        """Return the current recording state."""
         with self._lock:
             return self._state
 
@@ -50,42 +52,84 @@ class RecordingManager:
         filename: str | None = None,
     ) -> RecordingState:
         """
-        Start a recording session.
+        Start a new recording session.
 
-        This method prepares the destination path and updates the shared
+        The manager prepares the destination path and updates the shared
         RecordingState. Actual video encoding is handled elsewhere.
         """
         with self._lock:
             if self._state.is_recording:
                 raise RuntimeError("A recording is already active.")
 
-            self._recording_dir.mkdir(parents=True, exist_ok=True)
+            if not camera_id.strip():
+                raise ValueError("camera_id must not be empty.")
+
+            self._recording_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
             started_at = time()
 
             if filename is None:
-                filename = f"camera_{camera_id}_{int(started_at)}.mp4"
-
-            file_path = self._recording_dir / filename
-
-            try:
-                file_path.resolve().relative_to(
-                    self._recording_dir.resolve()
+                filename = (
+                    f"camera_{camera_id}_{int(started_at)}.mp4"
                 )
-            except ValueError as exc:
-                raise ValueError(
-                    "Recording filename must remain inside "
-                    "the recording directory."
-                ) from exc
+
+            safe_filename = Path(filename).name
+
+            if not safe_filename:
+                raise ValueError("filename must not be empty.")
+
+            file_path = self._recording_dir / safe_filename
+
+            self._started_at = started_at
 
             self._state = RecordingState(
                 is_recording=True,
-                filename=filename,
+                filename=safe_filename,
                 duration=0.0,
                 storage_path=str(file_path),
                 camera_id=camera_id,
                 status="recording",
                 file_size_mb=0.0,
+            )
+
+            return self._state
+
+    def update(self) -> RecordingState:
+        """
+        Update recording duration and current file size.
+
+        Actual video encoding remains the responsibility of the backend.
+        """
+        with self._lock:
+            if not self._state.is_recording:
+                return self._state
+
+            duration = self._state.duration
+
+            if self._started_at is not None:
+                duration = max(0.0, time() - self._started_at)
+
+            file_size_mb = self._state.file_size_mb
+            storage_path = self._state.storage_path
+
+            if storage_path:
+                file_path = Path(storage_path)
+
+                try:
+                    if file_path.is_file():
+                        file_size_mb = (
+                            file_path.stat().st_size / (1024 * 1024)
+                        )
+                except OSError:
+                    pass
+
+            self._state = replace(
+                self._state,
+                duration=duration,
+                file_size_mb=file_size_mb,
             )
 
             return self._state
@@ -101,15 +145,15 @@ class RecordingManager:
             if not self._state.is_recording:
                 raise RuntimeError("No recording is currently active.")
 
-            self._state = RecordingState(
+            self._update_state_locked()
+
+            self._state = replace(
+                self._state,
                 is_recording=False,
-                filename=self._state.filename,
-                duration=self._state.duration,
-                storage_path=self._state.storage_path,
-                camera_id=self._state.camera_id,
                 status="stopped",
-                file_size_mb=self._state.file_size_mb,
             )
+
+            self._started_at = None
 
             return self._state
 
@@ -117,21 +161,51 @@ class RecordingManager:
         """
         Cancel the active recording session.
 
-        This clears the active state without deleting any partially
-        created media file.
+        This clears the active recording state without deleting any
+        partially created media file.
         """
         with self._lock:
             if not self._state.is_recording:
                 raise RuntimeError("No recording is currently active.")
 
-            self._state = RecordingState(
+            self._state = replace(
+                self._state,
                 is_recording=False,
-                filename=self._state.filename,
-                duration=self._state.duration,
-                storage_path=self._state.storage_path,
-                camera_id=self._state.camera_id,
-                status="stopped",
-                file_size_mb=self._state.file_size_mb,
+                status="cancelled",
             )
 
+            self._started_at = None
+
             return self._state
+
+    def _update_state_locked(self) -> None:
+        """Update duration and file size while the lock is held."""
+        duration = self._state.duration
+
+        if self._started_at is not None:
+            duration = max(0.0, time() - self._started_at)
+
+        file_size_mb = self._state.file_size_mb
+        storage_path = self._state.storage_path
+
+        if storage_path:
+            file_path = Path(storage_path)
+
+            try:
+                if file_path.is_file():
+                    file_size_mb = (
+                        file_path.stat().st_size / (1024 * 1024)
+                    )
+            except OSError:
+                pass
+
+        self._state = replace(
+            self._state,
+            duration=duration,
+            file_size_mb=file_size_mb,
+        )
+
+
+__all__ = [
+    "RecordingManager",
+]
