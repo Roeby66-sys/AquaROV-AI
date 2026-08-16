@@ -1,10 +1,13 @@
+"src/aquarov/core/snapshot_manager.py"
+
 """
 AquaROV AI — Snapshot Manager.
 
 Framework-independent snapshot lifecycle manager.
 
-The manager creates snapshot paths and tracks snapshot metadata.
-Actual image capture is delegated to the camera/video backend.
+The manager creates snapshot paths and returns the shared SnapshotInfo
+DTO defined by the core DTO layer. Actual image capture is delegated
+to the camera/video backend.
 
 Project: AquaROV AI - Underwater ROV Inspection System
 Target: Axelera Metis + Voyager SDK deployments.
@@ -12,22 +15,14 @@ Target: Axelera Metis + Voyager SDK deployments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from time import time
 
+from aquarov.core.dto import SnapshotInfo
+
 
 DEFAULT_IMAGE_EXTENSION = ".jpg"
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotInfo:
-    """Information describing a captured snapshot."""
-
-    camera_id: str
-    file_path: Path
-    timestamp: float
 
 
 class SnapshotManager:
@@ -60,9 +55,8 @@ class SnapshotManager:
         """
         Create metadata for a new snapshot.
 
-        This method creates the destination directory and returns the
-        path that the camera/video backend should use when saving the image.
-        It does not capture or write image data itself.
+        The method creates the destination directory and returns the
+        shared SnapshotInfo DTO. It does not capture or write image data.
         """
         with self._lock:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +75,7 @@ class SnapshotManager:
 
             return SnapshotInfo(
                 camera_id=camera_id,
-                file_path=file_path,
+                image_path=str(file_path),
                 timestamp=timestamp,
             )
 
@@ -90,8 +84,9 @@ class SnapshotManager:
         camera_id: str,
         filename: str | None = None,
     ) -> Path:
-        """Return a snapshot destination path without creating image data."""
-        return self.create_snapshot_info(camera_id, filename).file_path
+        """Return a snapshot destination path."""
+        snapshot = self.create_snapshot_info(camera_id, filename)
+        return Path(snapshot.image_path)
 
     @staticmethod
     def _normalize_extension(extension: str) -> str:
