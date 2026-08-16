@@ -93,4 +93,4 @@ class SnapshotManager:
 
 __all__ = [
     "SnapshotManager",
-            ]
+        ]
