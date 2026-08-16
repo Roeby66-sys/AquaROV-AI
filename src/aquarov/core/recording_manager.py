@@ -68,6 +68,16 @@ class RecordingManager:
 
             file_path = self._recording_dir / filename
 
+            try:
+                file_path.resolve().relative_to(
+                    self._recording_dir.resolve()
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "Recording filename must remain inside "
+                    "the recording directory."
+                ) from exc
+
             self._state = RecordingState(
                 is_recording=True,
                 filename=filename,
