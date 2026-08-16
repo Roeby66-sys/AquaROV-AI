@@ -40,20 +40,36 @@ class SnapshotManager:
         Actual image capture is handled by the camera/video backend.
         """
         with self._lock:
-            self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+            if not camera_id.strip():
+                raise ValueError("camera_id must not be empty.")
+
+            self._snapshot_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
             timestamp = time()
 
             if filename is None:
-                filename = f"camera_{camera_id}_{int(timestamp)}.jpg"
+                filename = (
+                    f"camera_{camera_id}_{int(timestamp)}.jpg"
+                )
 
-            file_path = self._snapshot_dir / filename
+            safe_filename = Path(filename).name
+
+            if not safe_filename:
+                raise ValueError("filename must not be empty.")
+
+            file_path = self._snapshot_dir / safe_filename
 
             try:
-                file_path.resolve().relative_to(self._snapshot_dir.resolve())
+                file_path.resolve().relative_to(
+                    self._snapshot_dir.resolve()
+                )
             except ValueError as exc:
                 raise ValueError(
-                    "Snapshot filename must remain inside the snapshot directory."
+                    "Snapshot filename must remain inside "
+                    "the snapshot directory."
                 ) from exc
 
             return SnapshotInfo(
@@ -68,5 +84,13 @@ class SnapshotManager:
         filename: str | None = None,
     ) -> Path:
         """Build a safe runtime path for a snapshot."""
-        snapshot = self.create_snapshot_info(camera_id, filename)
+        snapshot = self.create_snapshot_info(
+            camera_id,
+            filename,
+        )
         return Path(snapshot.image_path)
+
+
+__all__ = [
+    "SnapshotManager",
+            ]
