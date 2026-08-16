@@ -101,10 +101,12 @@ class CameraManager:
 
         try:
             backend.open()
+
             with self._lock:
                 state = self._channels[camera_id]
                 state.connected = True
                 state.last_error = None
+
         except Exception as exc:
             self._set_error(camera_id, exc)
             raise
@@ -118,24 +120,34 @@ class CameraManager:
         finally:
             with self._lock:
                 state = self._channels.get(camera_id)
+
                 if state is not None:
                     state.connected = False
 
-    def read_frame(self, camera_id: str) -> Optional[InferenceFrame]:
+    def read_frame(
+        self,
+        camera_id: str,
+    ) -> Optional[InferenceFrame]:
         """Read one frame and optionally submit it to the inference worker."""
         backend = self._get_backend(camera_id)
 
         with self._lock:
             state = self._channels[camera_id]
-            if not state.connected:
-                raise RuntimeError(f"Camera is not connected: {camera_id}")
 
-            frame_id = state.frame_count
-            state.frame_count += 1
+            if not state.connected:
+                raise RuntimeError(
+                    f"Camera is not connected: {camera_id}"
+                )
 
         try:
             image = backend.read()
             timestamp = time()
+
+            # Increment the frame counter only after a frame was
+            # successfully acquired from the backend.
+            with self._lock:
+                frame_id = state.frame_count
+                state.frame_count += 1
 
             frame = InferenceFrame(
                 camera_id=camera_id,
@@ -172,6 +184,7 @@ class CameraManager:
         """Return a snapshot of the current camera state."""
         with self._lock:
             state = self._channels.get(camera_id)
+
             if state is None:
                 raise KeyError(f"Unknown camera: {camera_id}")
 
@@ -186,7 +199,10 @@ class CameraManager:
     def list_cameras(self) -> list[CameraChannel]:
         """Return all registered camera channels."""
         with self._lock:
-            return [state.channel for state in self._channels.values()]
+            return [
+                state.channel
+                for state in self._channels.values()
+            ]
 
     def connected_cameras(self) -> list[str]:
         """Return IDs of currently connected cameras."""
@@ -206,9 +222,14 @@ class CameraManager:
 
         return backend
 
-    def _set_error(self, camera_id: str, exc: Exception) -> None:
+    def _set_error(
+        self,
+        camera_id: str,
+        exc: Exception,
+    ) -> None:
         with self._lock:
             state = self._channels.get(camera_id)
+
             if state is not None:
                 state.last_error = str(exc)
 
@@ -253,4 +274,4 @@ __all__ = [
     "CameraState",
     "CameraManager",
     "MemoryCameraBackend",
-]
+        ]
