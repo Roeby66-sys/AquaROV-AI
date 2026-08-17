@@ -7,7 +7,7 @@ MODULES = [
     "aquarov",
     "aquarov.core",
     "aquarov.core.dto",
-    "aquarov.core.inference_worker",
+    "aquarov.ui.video_view",
     "aquarov.core.camera_manager",
 ]
 
