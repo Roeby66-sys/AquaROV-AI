@@ -2,29 +2,36 @@
 
 YOLO model integration layer for the AquaROV AI inference pipeline.
 
-This module provides a framework-independent interface for loading a YOLO
-model and converting its predictions into AquaROV detection objects.
+This module provides a framework-independent adapter that converts YOLO
+predictions into the shared AquaROV Detection and DetectionSet DTOs.
 
-The actual model backend is loaded lazily so the rest of the application can
-be imported and tested without requiring the YOLO runtime to be installed.
+The YOLO runtime is imported lazily so the rest of the application can be
+imported and tested without requiring Ultralytics to be installed.
 
-Designed to support the AquaROV AI pipeline:
+Pipeline:
 
     Camera -> InferenceWorker -> YOLODetector -> DetectionSet -> Overlay
 
-The backend can later be replaced or extended for Axelera Voyager/Metis
-without changing the UI layer.
+The adapter is intentionally isolated from the UI and core inference
+orchestration so the backend can later be replaced by Axelera Voyager/Metis
+without changing the application DTO contract.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from time import time
 from typing import Any
 
 import numpy as np
 
-from aquarov.core.dto import BoundingBox, Detection, DetectionSet
+from aquarov.core.dto import (
+    BoundingBox,
+    Detection,
+    DetectionClass,
+    DetectionSet,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,9 +52,8 @@ class YOLOIntegrationError(RuntimeError):
 class YOLODetector:
     """YOLO inference adapter for AquaROV AI.
 
-    The detector intentionally keeps the YOLO implementation behind a small
-    interface so the rest of AquaROV AI does not depend directly on a
-    particular YOLO package.
+    The detector keeps the YOLO implementation behind a small interface so
+    the rest of AquaROV AI does not depend directly on Ultralytics.
 
     Parameters
     ----------
@@ -65,12 +71,7 @@ class YOLODetector:
         return self._model is not None
 
     def load(self) -> None:
-        """Load the configured YOLO model.
-
-        The Ultralytics package is imported lazily. This prevents the entire
-        AquaROV application from failing to import when YOLO dependencies
-        are not installed.
-        """
+        """Load the configured YOLO model lazily."""
         model_path = Path(self.config.model_path)
 
         if not model_path.exists():
@@ -93,13 +94,29 @@ class YOLODetector:
                 f"Failed to load YOLO model: {model_path}"
             ) from exc
 
-    def predict(self, frame: np.ndarray) -> DetectionSet:
+    def predict(
+        self,
+        frame: np.ndarray,
+        *,
+        frame_index: int = 0,
+        source_camera: str = "",
+        timestamp: float | None = None,
+    ) -> DetectionSet:
         """Run YOLO inference on a single image frame.
 
         Parameters
         ----------
         frame:
             BGR image represented as a NumPy array.
+
+        frame_index:
+            Sequential frame number supplied by the caller.
+
+        source_camera:
+            Logical AquaROV camera identifier.
+
+        timestamp:
+            Frame timestamp. If omitted, the current Unix timestamp is used.
 
         Returns
         -------
@@ -117,6 +134,9 @@ class YOLODetector:
                 "frame must contain either a 2-D grayscale image "
                 "or a 3-D color image"
             )
+
+        if timestamp is None:
+            timestamp = time()
 
         predict_kwargs: dict[str, Any] = {
             "conf": self.config.confidence_threshold,
@@ -141,12 +161,30 @@ class YOLODetector:
             ) from exc
 
         if not results:
-            return DetectionSet(detections=[])
+            return DetectionSet(
+                frame_index=frame_index,
+                timestamp=timestamp,
+                source_camera=source_camera,
+                detections=(),
+                tracks=(),
+            )
 
-        return self._convert_result(results[0])
+        return self._convert_result(
+            results[0],
+            frame_index=frame_index,
+            timestamp=timestamp,
+            source_camera=source_camera,
+        )
 
-    def _convert_result(self, result: Any) -> DetectionSet:
-        """Convert a YOLO result into AquaROV DetectionSet."""
+    def _convert_result(
+        self,
+        result: Any,
+        *,
+        frame_index: int,
+        timestamp: float,
+        source_camera: str,
+    ) -> DetectionSet:
+        """Convert one YOLO result into the AquaROV DetectionSet DTO."""
 
         detections: list[Detection] = []
 
@@ -154,7 +192,13 @@ class YOLODetector:
         names = getattr(result, "names", {}) or {}
 
         if boxes is None:
-            return DetectionSet(detections=detections)
+            return DetectionSet(
+                frame_index=frame_index,
+                timestamp=timestamp,
+                source_camera=source_camera,
+                detections=(),
+                tracks=(),
+            )
 
         xyxy = self._to_numpy(boxes.xyxy)
         confidences = self._to_numpy(boxes.conf)
@@ -168,29 +212,91 @@ class YOLODetector:
             confidence = float(confidences[index])
             class_id = int(class_ids[index])
 
-            label = str(names.get(class_id, class_id))
-
-            bbox = BoundingBox(
-                x1=x1,
-                y1=y1,
-                x2=x2,
-                y2=y2,
+            label = self._resolve_label(
+                names=names,
+                class_id=class_id,
             )
 
+            detection_class = self._map_detection_class(label)
+
             detection = Detection(
-                class_id=class_id,
-                label=label,
+                object_id=index,
+                class_name=detection_class,
                 confidence=confidence,
-                bbox=bbox,
+                bounding_box=BoundingBox(
+                    x1=x1,
+                    y1=y1,
+                    x2=x2,
+                    y2=y2,
+                ),
+                timestamp=timestamp,
+                source_camera=source_camera,
             )
 
             detections.append(detection)
 
-        return DetectionSet(detections=detections)
+        return DetectionSet(
+            frame_index=frame_index,
+            timestamp=timestamp,
+            source_camera=source_camera,
+            detections=tuple(detections),
+            tracks=(),
+        )
+
+    @staticmethod
+    def _resolve_label(
+        *,
+        names: Any,
+        class_id: int,
+    ) -> str:
+        """Resolve a YOLO class ID to its textual label."""
+
+        if isinstance(names, dict):
+            value = names.get(class_id, class_id)
+        elif isinstance(names, (list, tuple)):
+            if 0 <= class_id < len(names):
+                value = names[class_id]
+            else:
+                value = class_id
+        else:
+            value = class_id
+
+        return str(value).strip().lower()
+
+    @staticmethod
+    def _map_detection_class(label: str) -> DetectionClass:
+        """Map a YOLO label to the AquaROV DetectionClass enum.
+
+        Unknown model labels intentionally fall back to UNKNOWN instead of
+        raising an exception. This allows different YOLO models to be used
+        without breaking the application DTO contract.
+        """
+
+        normalized = label.strip().lower().replace("-", "_").replace(" ", "_")
+
+        aliases: dict[str, DetectionClass] = {
+            "fish": DetectionClass.FISH,
+            "jellyfish": DetectionClass.JELLYFISH,
+            "jelly_fish": DetectionClass.JELLYFISH,
+            "starfish": DetectionClass.STARFISH,
+            "star_fish": DetectionClass.STARFISH,
+            "debris": DetectionClass.DEBRIS,
+            "marine_debris": DetectionClass.DEBRIS,
+            "trash": DetectionClass.DEBRIS,
+            "plastic": DetectionClass.DEBRIS,
+            "net_damage": DetectionClass.NET_DAMAGE,
+            "netdamage": DetectionClass.NET_DAMAGE,
+            "net_defect": DetectionClass.NET_DAMAGE,
+            "infra_defect": DetectionClass.INFRA_DEFECT,
+            "infrastructure_defect": DetectionClass.INFRA_DEFECT,
+        }
+
+        return aliases.get(normalized, DetectionClass.UNKNOWN)
 
     @staticmethod
     def _to_numpy(value: Any) -> np.ndarray:
         """Convert a YOLO tensor-like object to NumPy."""
+
         if hasattr(value, "detach"):
             value = value.detach()
 
@@ -204,4 +310,12 @@ class YOLODetector:
 
     def unload(self) -> None:
         """Release the loaded YOLO model."""
+
         self._model = None
+
+
+__all__ = [
+    "YOLOConfig",
+    "YOLOIntegrationError",
+    "YOLODetector",
+        ]
