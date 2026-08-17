@@ -33,8 +33,7 @@ from aquarov.core.inference_worker import (
     InferenceWorker,
     NullInferenceBackend,
 )
-from aquarov.core.video_view import VideoView
-
+from aquarov.ui.video_view import VideoView
 
 class _GuiBridge(QObject):
     """Thread-safe Qt signal bridge for non-GUI callbacks."""
